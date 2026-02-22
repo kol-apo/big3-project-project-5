@@ -362,6 +362,9 @@ We also tested the missing cert case by deleting the row entirely and trying aga
 Finally we set the expiry to a future date and confirmed the insert went through without errors.
 
 ---
+### Module 6: Events (The "Scheduled Maintenance") Challenge
+
+To test the event without waiting a month, temporarily change the schedule to `AT CURRENT_TIMESTAMP + INTERVAL 5 SECOND` so it fires almost immediately. After a few seconds, check that rows with `end_date` older than 5 years moved from `projects` into `archived_projects` and were removed from `projects`. Once confirmed, recreate the event with the correct `EVERY 1 MONTH` schedule. Alternatively, disable the event with `ALTER EVENT ev_archive_old_projects DISABLE` and run the INSERT and DELETE statements manually as a plain SQL script to verify which rows are affected before touching the live data.
 
 ## Team Contribution Statement
 
