@@ -1,6 +1,5 @@
 USE big3_construction;
 
--- Part 4A: Create procedure to add a new worker with their primary skill
 DELIMITER $$
 
 CREATE PROCEDURE sp_add_worker_with_skill(
@@ -33,10 +32,8 @@ END$$
 
 DELIMITER ;
 
--- Part 4A: Test the procedure
 CALL sp_add_worker_with_skill('Alice', 'Smith', '555-1234', 75000.00, 'Project Management');
 
--- Part 4B: Create procedure to assign a worker to a project with duplicate check
 DELIMITER $$
 
 CREATE PROCEDURE sp_assign_worker_to_project(
@@ -63,6 +60,5 @@ END$$
 
 DELIMITER ;
 
--- Part 4B: Test the procedure
 CALL sp_assign_worker_to_project(1, 'P001', @message);
 SELECT @message;
