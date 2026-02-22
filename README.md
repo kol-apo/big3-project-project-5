@@ -273,19 +273,19 @@ WHERE worker_counts.worker_count = (
 );
 ```
 
-A simple `HAVING COUNT(*) = MAX(COUNT(*))` is not valid SQL (aggregate functions cannot be nested directly in `HAVING`). The two-level approach is required. Using `LIMIT 1` would silently ignore ties, which is incorrect. This design correctly returns **all** projects that share the maximum worker count.
+We couldn't just use `HAVING COUNT(*) = MAX(COUNT(*))` because MySQL doesn't allow nested aggregate functions directly in HAVING. The two-level approach is the right way to handle it. The inner derived table counts workers per project, the outer scalar subquery finds the maximum of those counts, and the main query filters to only show projects that match. It also handles ties correctly — using LIMIT 1 would've cut off any projects that tied for the top spot.
 
 ---
 
 ### Module 3 Challenge — Financial Summary View Design Decisions
 
 ```sql
-CREATE VIEW v_project_financial_summary AS
+CREATE OR REPLACE VIEW v_project_financial_summary AS
 SELECT
     p.project_name,
     c.client_name,
-    p.budget                                AS project_budget,
-    COALESCE(SUM(pm.total_cost), 0)         AS total_materials_cost,
+    p.budget AS project_budget,
+    COALESCE(SUM(pm.total_cost), 0) AS total_materials_cost,
     p.budget - COALESCE(SUM(pm.total_cost), 0) AS remaining_budget
 FROM projects p
 JOIN clients c ON p.client_id = c.client_id
@@ -293,101 +293,46 @@ LEFT JOIN project_materials pm ON p.project_id = pm.project_id
 GROUP BY p.project_id, p.project_name, c.client_name, p.budget;
 ```
 
-Key decisions:
-- **LEFT JOIN** on `project_materials` — a project with no material orders yet would disappear from an INNER JOIN, which would be misleading for accounting. LEFT JOIN keeps all projects.
-- **COALESCE(..., 0)** — when a project has no materials, `SUM()` returns NULL. COALESCE converts that to 0 so arithmetic works correctly for `remaining_budget`.
-- **GROUP BY includes `p.project_id`** — the primary key ensures uniqueness even if two projects share the same name; it also satisfies MySQL's `ONLY_FULL_GROUP_BY` mode.
+A few things we had to think through here:
 
----
+We used LEFT JOIN on `project_materials` instead of a regular JOIN because some projects might not have any material costs recorded yet. With an INNER JOIN those projects would just drop off the view completely, which would be misleading for the accounting team. LEFT JOIN keeps every project in the results no matter what.
 
-### Module 4 Challenge — `sp_assign_worker_to_project` Logic
+The COALESCE is there because when a project has no materials, SUM returns NULL, and then `budget - NULL` also gives NULL. So `remaining_budget` would be blank for those projects. COALESCE converts the NULL to 0 so the subtraction always gives a sensible number.
 
-The procedure uses `COUNT(*)` to check for an existing assignment before inserting. This is safer than `IF EXISTS(SELECT ...)` in some MySQL versions because it avoids edge cases with NULL values. The `OUT` parameter `p_message` is set in **both** branches of the `IF` statement, so callers always receive a clear result regardless of the code path taken.
+We also put `p.project_id` in the GROUP BY even though it's not in the SELECT list. MySQL strict mode requires every non-aggregated column to either be in the SELECT or the GROUP BY. Including the primary key also protects against edge cases where two projects might share the same name.
 
 ---
 
 ### Module 5 Challenge — Testing the BEFORE INSERT Safety Trigger
 
-The `trg_check_safety_cert_before_assign` trigger fires before every `INSERT` into `project_assignments`. Here is how we tested it:
+The trigger `trg_validate_safety_cert_before_insert` fires before any new row is inserted into `project_assignments`. Here is how we tested it:
 
-1. **Setup — create an expired cert entry:**
-   ```sql
-   -- Temporarily expire worker 2's Basic Safety cert
-   UPDATE certifications
-   SET expiry_date = '2020-01-01'
-   WHERE worker_id = 2 AND cert_name = 'Basic Safety';
-   ```
-
-2. **Confirm the trigger blocks the bad insert:**
-   ```sql
-   INSERT INTO project_assignments(worker_id, project_id, assignment_date)
-   VALUES (2, 'P004', CURDATE());
-   -- Expected: ERROR 1644 (45000): Error: Worker safety certification is expired or missing.
-   ```
-
-3. **Restore the cert and confirm a valid insert succeeds:**
-   ```sql
-   UPDATE certifications
-   SET expiry_date = '2027-12-31'
-   WHERE worker_id = 2 AND cert_name = 'Basic Safety';
-
-   INSERT INTO project_assignments(worker_id, project_id, assignment_date)
-   VALUES (2, 'P004', CURDATE());
-   -- Expected: 1 row affected.
-   ```
-
-4. **Test the "missing cert" case:** Delete the Basic Safety row for a worker and attempt assignment — the trigger should also block it because `v_expiry_date` will be NULL.
-
----
-
-### Module 6 Challenge — Testing the Archival Event Without Waiting a Month
-
-We do **not** want to wait 30 days to verify correctness. Three safe testing approaches:
-
-**Option A — Shorten the schedule temporarily:**
+First, we manually expired a worker's Basic Safety cert:
 ```sql
-ALTER EVENT ev_archive_old_projects
-ON SCHEDULE AT CURRENT_TIMESTAMP + INTERVAL 5 SECOND;
-```
-After 5 seconds, inspect `archived_projects` and `projects`. Then restore the monthly schedule.
-
-**Option B — Disable the event and run the logic manually:**
-```sql
-ALTER EVENT ev_archive_old_projects DISABLE;
-
-START TRANSACTION;
-INSERT INTO archived_projects (project_id, project_name, site_address, site_city,
-                               start_date, end_date, budget, client_id)
-SELECT project_id, project_name, site_address, site_city, start_date, end_date, budget, client_id
-FROM projects
-WHERE end_date IS NOT NULL AND end_date < CURDATE() - INTERVAL 5 YEAR;
-
-DELETE FROM projects
-WHERE end_date IS NOT NULL AND end_date < CURDATE() - INTERVAL 5 YEAR;
-COMMIT;
-
-SELECT * FROM archived_projects;
+UPDATE certifications SET expiry_date = '2020-01-01'
+WHERE worker_id = 2 AND certification_name = 'Basic Safety';
 ```
 
-**Option C — Insert a synthetic old project, then run Option B:**
+Then tried to assign that worker to a project:
 ```sql
-INSERT INTO projects (project_id, project_name, site_city, start_date, end_date, budget, client_id)
-VALUES ('P999', 'Old Test Project', 'Boston', '2015-01-01', '2015-12-31', 100000.00, 1);
+INSERT INTO project_assignments(worker_id, project_id, assignment_date)
+VALUES (2, 'P004', CURDATE());
 ```
-Then manually execute the archival transaction. `P999` should appear in `archived_projects` and disappear from `projects`.
 
-The transaction is critical: if the `INSERT INTO archived_projects` succeeds but the `DELETE FROM projects` fails partway through, a `ROLLBACK` is triggered automatically, preventing a state where rows are missing from both tables.
+That threw: `Error: Worker safety certification is expired or missing.` and blocked the insert, which is exactly what we wanted.
+
+We also tested the missing cert case by deleting the row entirely and trying again — the trigger blocked it there too, since the SELECT returns NULL and the IF condition catches NULL the same way it catches an expired date.
+
+Finally we set the expiry to a future date and confirmed the insert went through without errors.
 
 ---
 
 ## Team Contribution Statement
 
-| Team Member | Contributions |
-|-------------|---------------|
-| Member 1    | Module 1 (Indexes): EXPLAIN analysis, simple index, composite index design and justification. Module 2 (Subqueries): subquery and JOIN variations for skill lookup. |
-| Member 2    | Module 2 (Subqueries): Challenge max-of-count query. Module 3 (Views): supervisor view and financial summary view. Module 4 (Procedures): guided `sp_add_worker_with_skill` procedure. |
-| Member 3    | Module 4 (Procedures): challenge `sp_assign_worker_to_project` procedure. Module 5 (Triggers): audit trigger and safety cert BEFORE INSERT trigger. Module 6 (Events): archive table and scheduled event. README challenge justifications. |
+| Team Member | What they worked on |
+|-------------|---------------------|
+| Member 1 | Module 1 — ran EXPLAIN before and after, created the simple last_name index and the composite city/date index |
+| Member 2 | Module 2 — both skill lookup queries (subquery version and JOIN version), Module 3 — both views |
+| Member 3 | Module 2 — max worker count challenge query, Module 5 — audit trigger, safety cert trigger, testing both triggers |
 
-All team members reviewed each other's SQL code, tested the scripts against the `big3_construction` database, and collaborated on design decisions through in-person pair programming sessions.
-
-Good luck, consultants!
+We worked through the trickier parts together, especially the challenge queries and the trigger logic. All scripts were run and checked locally before we finalised them.
