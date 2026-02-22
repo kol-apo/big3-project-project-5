@@ -305,6 +305,39 @@ The COALESCE is there because when a project has no materials, SUM returns NULL,
 We also put `p.project_id` in the GROUP BY even though it's not in the SELECT list. MySQL strict mode requires every non-aggregated column to either be in the SELECT or the GROUP BY. Including the primary key also protects against edge cases where two projects might share the same name.
 
 ---
+# Module 4 Challenge – Stored Procedures
+
+## Part 4A: sp_add_worker_with_skill
+
+This procedure handles adding a new worker and their primary skill in one call. It inserts the worker, grabs the new ID using `LAST_INSERT_ID()`, looks up the skill ID, and only inserts into `worker_skills` if the skill actually exists. Everything runs inside a transaction so both inserts either succeed together or not at all.
+
+**Test:**
+```sql
+CALL sp_add_worker_with_skill('Alice', 'Smith', '555-1234', 75000.00, 'Project Management');
+```
+Checked the `workers` and `worker_skills` tables after — Alice was added and her skill was linked correctly.
+
+---
+
+## Part 4B: sp_assign_worker_to_project
+
+This procedure assigns a worker to a project but first checks if that assignment already exists. It uses `COUNT(*)` to detect duplicates and returns a message through an `OUT` parameter instead of throwing an error.
+
+**Test 1 – New assignment (should succeed):**
+```sql
+CALL sp_assign_worker_to_project(1, 'P001', @message);
+SELECT @message;
+-- Output: 'Success: Worker assigned.'
+```
+
+**Test 2 – Duplicate assignment (should return error message):**
+```sql
+CALL sp_assign_worker_to_project(1, 'P001', @message);
+SELECT @message;
+-- Output: 'Error: Worker already assigned to this project.'
+```
+
+Both tests worked as expected.
 
 ### Module 5 Challenge — Testing the BEFORE INSERT Safety Trigger
 
