@@ -331,8 +331,9 @@ Finally we set the expiry to a future date and confirmed the insert went through
 
 | Team Member | What they worked on |
 |-------------|---------------------|
-| Member 1 | Module 1 — ran EXPLAIN before and after, created the simple last_name index and the composite city/date index |
-| Member 2 | Module 2 — both skill lookup queries (subquery version and JOIN version), Module 3 — both views |
-| Member 3 | Module 2 — max worker count challenge query, Module 5 — audit trigger, safety cert trigger, testing both triggers |
+| Oluba | Module 1 (Indexes) — EXPLAIN analysis, simple last_name index, composite city/date index. Module 2 (Subqueries) — both skill lookup queries and max worker count challenge. Module 3 (Views) — supervisor view and financial summary view. |
+| John Obure | Module 4 (Stored Procedures) — guided `sp_add_worker_with_skill` procedure and challenge `sp_assign_worker_to_project` procedure. |
+| Hephzibah Ofomi | Module 5 (Triggers) — audit log table, budget audit trigger, safety cert BEFORE INSERT trigger, and trigger testing. |
+| Paul Rwagasana | Module 6 (Events) — archive table, archival event with transaction logic, and event scheduler setup. |
 
 We worked through the trickier parts together, especially the challenge queries and the trigger logic. All scripts were run and checked locally before we finalised them.
