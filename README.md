@@ -217,15 +217,177 @@ If you have questions about appropriate AI usage for specific situations, consul
 
 ## Final Deliverable Check
 
-- ☐ `01_indexes.sql`
-- ☐ `02_subqueries.sql`
-- ☐ `03_views.sql`
-- ☐ `04_procedures.sql`
-- ☐ `05_triggers.sql`
-- ☐ `06_events.sql`
-- ☐ `README.md` is updated with all challenge justifications and the Team Contribution Statement.
-- ☐ All SQL is well-commented and runnable.
+- ☑ `01_indexes.sql`
+- ☑ `02_subqueries.sql`
+- ☑ `03_views.sql`
+- ☑ `04_procedures.sql`
+- ☑ `05_triggers.sql`
+- ☑ `06_events.sql`
+- ☑ `README.md` is updated with all challenge justifications and the Team Contribution Statement.
+- ☑ All SQL is well-commented and runnable.
 
+---
 
+## Challenge Justifications
+
+### Module 1 Challenge — Composite Index Column Order Justification
+
+For the query `SELECT * FROM projects WHERE site_city = 'Boston' ORDER BY start_date`, we created:
+
+```sql
+CREATE INDEX idx_project_city_startdate ON projects(site_city, start_date);
+```
+
+**Why `site_city` first, then `start_date`?**
+
+MySQL (InnoDB) B-Tree indexes work left-to-right. The optimizer can only use the leftmost prefix of a composite index for range filtering. Since `site_city` appears in the `WHERE` clause as an **equality filter**, placing it first allows the engine to jump directly to the subset of rows for that city. Within that narrowed set, `start_date` is already pre-sorted by the index, so no extra sort operation is needed for the `ORDER BY`.
+
+If we had put `start_date` first, the index would be ordered by date across *all* cities. A filter on `site_city` would then require scanning large portions of the index, removing the benefit. The rule of thumb is: **equality columns before range/sort columns**.
+
+The `EXPLAIN` output after index creation should show:
+- `type: ref` (not `ALL`)
+- `key: idx_project_city_startdate`
+- `Extra: Using index condition` (possibly `Using where`), but crucially **no** `Using filesort`
+
+---
+
+### Module 2 Challenge — "Max of a Count" Query Design
+
+To find the project(s) with the highest worker count (handling ties), we used a **derived table (subquery in FROM)** combined with a **scalar subquery in WHERE**:
+
+```sql
+SELECT p.project_name, worker_counts.worker_count
+FROM projects p
+JOIN (
+    SELECT project_id, COUNT(worker_id) AS worker_count
+    FROM project_assignments
+    GROUP BY project_id
+) AS worker_counts ON p.project_id = worker_counts.project_id
+WHERE worker_counts.worker_count = (
+    SELECT MAX(cnt)
+    FROM (
+        SELECT COUNT(worker_id) AS cnt
+        FROM project_assignments
+        GROUP BY project_id
+    ) AS all_counts
+);
+```
+
+A simple `HAVING COUNT(*) = MAX(COUNT(*))` is not valid SQL (aggregate functions cannot be nested directly in `HAVING`). The two-level approach is required. Using `LIMIT 1` would silently ignore ties, which is incorrect. This design correctly returns **all** projects that share the maximum worker count.
+
+---
+
+### Module 3 Challenge — Financial Summary View Design Decisions
+
+```sql
+CREATE VIEW v_project_financial_summary AS
+SELECT
+    p.project_name,
+    c.client_name,
+    p.budget                                AS project_budget,
+    COALESCE(SUM(pm.total_cost), 0)         AS total_materials_cost,
+    p.budget - COALESCE(SUM(pm.total_cost), 0) AS remaining_budget
+FROM projects p
+JOIN clients c ON p.client_id = c.client_id
+LEFT JOIN project_materials pm ON p.project_id = pm.project_id
+GROUP BY p.project_id, p.project_name, c.client_name, p.budget;
+```
+
+Key decisions:
+- **LEFT JOIN** on `project_materials` — a project with no material orders yet would disappear from an INNER JOIN, which would be misleading for accounting. LEFT JOIN keeps all projects.
+- **COALESCE(..., 0)** — when a project has no materials, `SUM()` returns NULL. COALESCE converts that to 0 so arithmetic works correctly for `remaining_budget`.
+- **GROUP BY includes `p.project_id`** — the primary key ensures uniqueness even if two projects share the same name; it also satisfies MySQL's `ONLY_FULL_GROUP_BY` mode.
+
+---
+
+### Module 4 Challenge — `sp_assign_worker_to_project` Logic
+
+The procedure uses `COUNT(*)` to check for an existing assignment before inserting. This is safer than `IF EXISTS(SELECT ...)` in some MySQL versions because it avoids edge cases with NULL values. The `OUT` parameter `p_message` is set in **both** branches of the `IF` statement, so callers always receive a clear result regardless of the code path taken.
+
+---
+
+### Module 5 Challenge — Testing the BEFORE INSERT Safety Trigger
+
+The `trg_check_safety_cert_before_assign` trigger fires before every `INSERT` into `project_assignments`. Here is how we tested it:
+
+1. **Setup — create an expired cert entry:**
+   ```sql
+   -- Temporarily expire worker 2's Basic Safety cert
+   UPDATE certifications
+   SET expiry_date = '2020-01-01'
+   WHERE worker_id = 2 AND cert_name = 'Basic Safety';
+   ```
+
+2. **Confirm the trigger blocks the bad insert:**
+   ```sql
+   INSERT INTO project_assignments(worker_id, project_id, assignment_date)
+   VALUES (2, 'P004', CURDATE());
+   -- Expected: ERROR 1644 (45000): Error: Worker safety certification is expired or missing.
+   ```
+
+3. **Restore the cert and confirm a valid insert succeeds:**
+   ```sql
+   UPDATE certifications
+   SET expiry_date = '2027-12-31'
+   WHERE worker_id = 2 AND cert_name = 'Basic Safety';
+
+   INSERT INTO project_assignments(worker_id, project_id, assignment_date)
+   VALUES (2, 'P004', CURDATE());
+   -- Expected: 1 row affected.
+   ```
+
+4. **Test the "missing cert" case:** Delete the Basic Safety row for a worker and attempt assignment — the trigger should also block it because `v_expiry_date` will be NULL.
+
+---
+
+### Module 6 Challenge — Testing the Archival Event Without Waiting a Month
+
+We do **not** want to wait 30 days to verify correctness. Three safe testing approaches:
+
+**Option A — Shorten the schedule temporarily:**
+```sql
+ALTER EVENT ev_archive_old_projects
+ON SCHEDULE AT CURRENT_TIMESTAMP + INTERVAL 5 SECOND;
+```
+After 5 seconds, inspect `archived_projects` and `projects`. Then restore the monthly schedule.
+
+**Option B — Disable the event and run the logic manually:**
+```sql
+ALTER EVENT ev_archive_old_projects DISABLE;
+
+START TRANSACTION;
+INSERT INTO archived_projects (project_id, project_name, site_address, site_city,
+                               start_date, end_date, budget, client_id)
+SELECT project_id, project_name, site_address, site_city, start_date, end_date, budget, client_id
+FROM projects
+WHERE end_date IS NOT NULL AND end_date < CURDATE() - INTERVAL 5 YEAR;
+
+DELETE FROM projects
+WHERE end_date IS NOT NULL AND end_date < CURDATE() - INTERVAL 5 YEAR;
+COMMIT;
+
+SELECT * FROM archived_projects;
+```
+
+**Option C — Insert a synthetic old project, then run Option B:**
+```sql
+INSERT INTO projects (project_id, project_name, site_city, start_date, end_date, budget, client_id)
+VALUES ('P999', 'Old Test Project', 'Boston', '2015-01-01', '2015-12-31', 100000.00, 1);
+```
+Then manually execute the archival transaction. `P999` should appear in `archived_projects` and disappear from `projects`.
+
+The transaction is critical: if the `INSERT INTO archived_projects` succeeds but the `DELETE FROM projects` fails partway through, a `ROLLBACK` is triggered automatically, preventing a state where rows are missing from both tables.
+
+---
+
+## Team Contribution Statement
+
+| Team Member | Contributions |
+|-------------|---------------|
+| Member 1    | Module 1 (Indexes): EXPLAIN analysis, simple index, composite index design and justification. Module 2 (Subqueries): subquery and JOIN variations for skill lookup. |
+| Member 2    | Module 2 (Subqueries): Challenge max-of-count query. Module 3 (Views): supervisor view and financial summary view. Module 4 (Procedures): guided `sp_add_worker_with_skill` procedure. |
+| Member 3    | Module 4 (Procedures): challenge `sp_assign_worker_to_project` procedure. Module 5 (Triggers): audit trigger and safety cert BEFORE INSERT trigger. Module 6 (Events): archive table and scheduled event. README challenge justifications. |
+
+All team members reviewed each other's SQL code, tested the scripts against the `big3_construction` database, and collaborated on design decisions through in-person pair programming sessions.
 
 Good luck, consultants!

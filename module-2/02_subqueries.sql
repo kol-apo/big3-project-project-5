@@ -24,10 +24,10 @@ JOIN (
     GROUP BY project_id
 ) AS worker_counts ON p.project_id = worker_counts.project_id
 WHERE worker_counts.worker_count = (
-    SELECT MAX(wc.worker_count)
+    SELECT MAX(cnt)
     FROM (
-        SELECT COUNT(worker_id) AS worker_count
+        SELECT COUNT(worker_id) AS cnt
         FROM project_assignments
         GROUP BY project_id
-    ) AS wc
+    ) AS all_counts
 );

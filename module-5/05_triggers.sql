@@ -1,8 +1,3 @@
--- Module 5: Triggers
-
--- Part 5A: audit trail for budget increases
-
--- create log table
 CREATE TABLE IF NOT EXISTS project_budget_audit (
     log_id INT AUTO_INCREMENT PRIMARY KEY,
     project_id VARCHAR(10),
@@ -18,7 +13,6 @@ CREATE TRIGGER trg_audit_project_budget_update
 AFTER UPDATE ON projects
 FOR EACH ROW
 BEGIN
-    -- log only if budget increases
     IF NEW.budget > OLD.budget THEN
         INSERT INTO project_budget_audit(project_id, old_budget, new_budget, change_user)
         VALUES (OLD.project_id, OLD.budget, NEW.budget, USER());
@@ -26,14 +20,6 @@ BEGIN
 END$$
 
 DELIMITER ;
-
--- verification statements
--- (run these manually to see the trigger in action)
--- UPDATE projects SET budget = budget + 50000 WHERE project_id = 'P001';
--- SELECT * FROM project_budget_audit;
-
-
--- Part 5B: challenge trigger for safety certification
 
 DELIMITER $$
 
@@ -43,7 +29,6 @@ FOR EACH ROW
 BEGIN
     DECLARE cert_expiry DATE;
 
-    -- find Basic Safety expiry
     SET cert_expiry = (
         SELECT expiry_date
         FROM certifications
@@ -52,7 +37,6 @@ BEGIN
         LIMIT 1
     );
 
-    -- either missing or expired
     IF cert_expiry IS NULL OR cert_expiry < CURDATE() THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Error: Worker safety certification is expired or missing.';
@@ -60,8 +44,3 @@ BEGIN
 END$$
 
 DELIMITER ;
-
--- example test:
--- set a 'Basic Safety' cert expiry to past or delete the row, then
--- INSERT INTO project_assignments(...) should raise the error.
-
