@@ -9,6 +9,8 @@
 
 **Scenario:** Big3 Construction was thrilled with the normalized 5NF database your team delivered in the Design Activity. The data is clean, redundant-free, and an order of magnitude more reliable.
 
+**Link to Task Sheet** [Task Sheet](https://docs.google.com/spreadsheets/d/1wUUJWt1ODAVThNjrU_eBNUIcR20hVv4NkppdPitfEaY/edit?usp=sharing)
+
 Now that they've been using it for a few months, they've come back to you with a new set of "Phase 2" requirements. They don't just want to store data; they want to optimize performance, simplify access for different user roles, and automate common business processes.
 
 Your team has been retained to implement these advanced features.
